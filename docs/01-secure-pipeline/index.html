@@ -127,7 +127,7 @@ td:first-child{font-weight:600;white-space:nowrap}
 .tool{font-family:var(--mono);font-size:12.5px}
 .pill{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap}
 .pill.block{background:color-mix(in srgb,var(--fail) 14%,var(--surface));color:var(--fail)}
-.pill.track{background:color-mix(in srgb,var(--warn) 16%,var(--surface));color:var(--warn)}
+.pill.tk{background:color-mix(in srgb,var(--warn) 16%,var(--surface));color:var(--warn)}
 .pill.page{background:color-mix(in srgb,var(--accent) 14%,var(--surface));color:var(--accent)}
 details{border-bottom:1px solid var(--line);padding:10px 0}
 details:first-of-type{border-top:1px solid var(--line)}
@@ -188,9 +188,9 @@ pre .c{color:var(--code-dim)} pre .k{color:var(--code-key)}
       <tbody>
         <tr><td>Any secret</td><td><span class="pill block">Block</span></td><td>There is no safe severity for a leaked credential. Rotate it.</td></tr>
         <tr><td>Critical CVE, fix available</td><td><span class="pill block">Block</span></td><td>The remedy is an upgrade, so there is no reason to ship it.</td></tr>
-        <tr><td>CVE with no fix</td><td><span class="pill track">Exception</span></td><td>Blocking achieves nothing. Record an owner and an expiry date.</td></tr>
+        <tr><td>CVE with no fix</td><td><span class="pill tk">Exception</span></td><td>Blocking achieves nothing. Record an owner and an expiry date.</td></tr>
         <tr><td>New vulnerability in changed code</td><td><span class="pill block">Block</span></td><td>Gate on new code so the author fixes it while it is fresh.</td></tr>
-        <tr><td>Old findings in untouched code</td><td><span class="pill track">Ticket</span></td><td>Failing every build on legacy debt teaches people to ignore the gate.</td></tr>
+        <tr><td>Old findings in untouched code</td><td><span class="pill tk">Ticket</span></td><td>Failing every build on legacy debt teaches people to ignore the gate.</td></tr>
         <tr><td>High-severity IaC misconfiguration</td><td><span class="pill block">Block</span></td><td>A public bucket or open security group is cheapest to fix as a text file.</td></tr>
         <tr><td>Unsigned image</td><td><span class="pill block">Reject</span></td><td>The cluster refuses it at admission, whoever submitted it.</td></tr>
         <tr><td>Runtime alert</td><td><span class="pill page">Page on-call</span></td><td>It already happened, so the only response left is fast detection.</td></tr>
@@ -526,7 +526,7 @@ function renderDetail(){const s=STAGES[sel],last=sel===6;
     <details id="q-${sel}"><summary>${s.q}</summary><p>${s.a}</p></details>
   </div>`;
 }
-function place(){const tr=track.getBoundingClientRect();
+function place(still){fill.style.transition=still===true?"none":"";const tr=track.getBoundingClientRect();
   const c=i=>{const r=stageEls[i].querySelector(".node").getBoundingClientRect();return{x:r.left-tr.left+r.width/2,y:r.top-tr.top+r.height/2}};
   const a=c(0),b=c(6),p=c(active),vert=Math.abs(a.x-b.x)<2;
   const set=(el,to)=>{el.style.left=(vert?a.x-1:a.x)+"px";el.style.top=(vert?a.y:a.y-1)+"px";
@@ -561,8 +561,8 @@ async function play(){if(ended)reset();if(playing)return;playing=true;const id=r
 $("play").onclick=()=>{if(playing){playing=false;render()}else play()};
 $("step").onclick=()=>{if(playing){playing=false;render()}else advance()};
 $("reset").onclick=()=>reset();
-addEventListener("resize",place);
-if(document.fonts&&document.fonts.ready)document.fonts.ready.then(place);
+addEventListener("resize",()=>place(true));
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(()=>place(true));
 
 // config tabs, highlighting, copy
 const RAW={};let tab="wf";
