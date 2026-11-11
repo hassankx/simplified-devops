@@ -1,0 +1,24 @@
+# Kyverno: reject any pod whose image was not signed by the workflow above
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+spec:
+  validationFailureAction: Enforce    # use Audit in dev to see violations first
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/your-org/*"
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/your-org/your-repo/.github/workflows/secure-pipeline.yml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev

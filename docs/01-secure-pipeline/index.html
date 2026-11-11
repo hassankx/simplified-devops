@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Secure Pipeline Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one commit travels a seven-stop rail; a CI log and a detail panel sit under it, reference sections follow. */
+:root{
+  --bg:#f2f4f8; --surface:#ffffff; --ink:#151e2c; --muted:#586577; --line:#d6dce6;
+  --accent:#2f4fd0; --pass:#14774a; --fail:#c0321f; --warn:#9a5c00;
+  --code-bg:#0f1621; --code-fg:#d7deea; --code-dim:#7f8da3; --code-key:#8fb4ff;
+  --display:"Space Grotesk",system-ui,sans-serif;
+  --body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0d131b; --surface:#151d28; --ink:#e6ebf3; --muted:#95a2b5; --line:#2a3546;
+    --accent:#8ea6ff; --pass:#4cc38a; --fail:#ff7d69; --warn:#f0b24a;
+    --code-bg:#0a0f17; --code-fg:#d7deea; --code-dim:#7f8da3; --code-key:#8fb4ff;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0d131b; --surface:#151d28; --ink:#e6ebf3; --muted:#95a2b5; --line:#2a3546;
+  --accent:#8ea6ff; --pass:#4cc38a; --fail:#ff7d69; --warn:#f0b24a;
+  --code-bg:#0a0f17; --code-fg:#d7deea; --code-dim:#7f8da3; --code-key:#8fb4ff;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55}
+.wrap{max-width:1120px;margin:0 auto;padding-block:28px 64px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:40px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:clamp(26px,4vw,38px);font-weight:700;letter-spacing:-.01em}
+h2{font-size:22px;font-weight:600}
+h3{font-size:17px;font-weight:600}
+p{margin:0}
+.lede{color:var(--muted);max-width:62ch;margin-top:8px;font-size:16px}
+.sub{color:var(--muted);max-width:65ch;margin-top:6px}
+section{display:flex;flex-direction:column;gap:16px}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* scenario + controls */
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.label{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.chip{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 12px;font-size:13.5px}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.ctl{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:7px 14px;font-weight:500}
+.ctl.primary{background:var(--accent);border-color:var(--accent);color:var(--bg);min-width:84px}
+.ctl:disabled{opacity:.45;cursor:default}
+.intro{font-size:16px;font-weight:500;min-height:1.6em}
+
+/* track */
+.track{position:relative;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}
+.stage{display:grid;grid-template-rows:auto 1fr;justify-items:center;gap:10px;min-width:0}
+.node{width:24px;height:24px;border-radius:50%;border:2px solid var(--line);background:var(--bg);
+  display:grid;place-items:center;font:600 12px var(--mono);color:var(--muted);position:relative;z-index:1;
+  transition:border-color .3s,color .3s,background .3s}
+.stage.pass .node{border-color:var(--pass);color:var(--pass)}
+.stage.fail .node{border-color:var(--fail);color:var(--fail)}
+.stage.alert .node{border-color:var(--warn);color:var(--warn)}
+.stage.skipped .node{border-style:dashed}
+.card{width:100%;min-width:0;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:10px;
+  padding:12px 10px;display:flex;flex-direction:column;gap:8px;transition:border-color .3s,box-shadow .3s,opacity .3s}
+.card .name{font:600 16px var(--display);display:block}
+.card .job{font-size:12.5px;color:var(--muted);display:block;line-height:1.35}
+.stage.sel .card{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.stage.fail .card{border-color:var(--fail);box-shadow:0 0 0 1px var(--fail)}
+.stage.alert .card{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn)}
+.stage.skipped .card{opacity:.5}
+.checks{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.chk{display:flex;gap:6px;align-items:center;font-size:12.5px;line-height:1.25;min-width:0}
+.chk .t{min-width:0;overflow-wrap:anywhere}
+.dot{flex:none;width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;
+  font:700 10px var(--mono);color:var(--bg)}
+.chk.running .dot{border-color:var(--accent);border-top-color:transparent;animation:spin .7s linear infinite}
+.chk.pass .dot{background:var(--pass);border-color:var(--pass)}
+.chk.fail .dot{background:var(--fail);border-color:var(--fail)}
+.chk.alert .dot{background:var(--warn);border-color:var(--warn)}
+.chk.fail .t{color:var(--fail);font-weight:600}
+.chk.alert .t{color:var(--warn);font-weight:600}
+.chk.skipped .t{text-decoration:line-through;color:var(--muted)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.rail,.fill{position:absolute;background:var(--line);z-index:0;border-radius:2px}
+.fill{background:var(--accent);transition:width .5s ease,height .5s ease}
+.packet{position:absolute;left:0;top:0;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;background:var(--accent);
+  z-index:2;transition:transform .5s cubic-bezier(.5,0,.2,1),background .3s;box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 25%,transparent)}
+.packet.live{animation:pulse 1.2s ease-in-out infinite}
+.packet.fail{background:var(--fail);box-shadow:0 0 0 4px color-mix(in srgb,var(--fail) 25%,transparent)}
+.packet.alert{background:var(--warn);box-shadow:0 0 0 4px color-mix(in srgb,var(--warn) 25%,transparent)}
+.packet.pass{background:var(--pass);box-shadow:0 0 0 4px color-mix(in srgb,var(--pass) 25%,transparent)}
+@keyframes pulse{50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--accent) 10%,transparent)}}
+
+/* console + outcome */
+.console{background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:12px 14px;font:13px/1.6 var(--mono);
+  height:calc(7 * 1.6em + 24px);overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
+.console div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.console .dim{color:var(--code-dim)}
+.console .ok{color:#6fd3a0}.console .bad{color:#ff8f7d}.console .amb{color:#f0b24a}
+.outcome{border-left:3px solid var(--line);padding:4px 0 4px 12px;min-height:3.4em}
+.outcome strong{font-family:var(--display);font-size:17px;display:block}
+.outcome span{color:var(--muted)}
+.outcome.pass{border-color:var(--pass)}.outcome.pass strong{color:var(--pass)}
+.outcome.fail{border-color:var(--fail)}.outcome.fail strong{color:var(--fail)}
+.outcome.alert{border-color:var(--warn)}.outcome.alert strong{color:var(--warn)}
+
+/* detail */
+.detail{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;display:grid;
+  grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:20px 28px}
+.detail > div{min-width:0;display:flex;flex-direction:column;gap:12px}
+.detail p{max-width:65ch}
+.say{font:500 17px/1.4 var(--display);border-left:3px solid var(--accent);padding-left:12px}
+.note{font-size:13.5px;color:var(--muted)}
+.note b{color:var(--ink);font-weight:600}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th{text-align:left;font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:600}
+th,td{padding:8px 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600;white-space:nowrap}
+.tool{font-family:var(--mono);font-size:12.5px}
+.pill{display:inline-block;font-size:12px;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap}
+.pill.block{background:color-mix(in srgb,var(--fail) 14%,var(--surface));color:var(--fail)}
+.pill.track{background:color-mix(in srgb,var(--warn) 16%,var(--surface));color:var(--warn)}
+.pill.page{background:color-mix(in srgb,var(--accent) 14%,var(--surface));color:var(--accent)}
+details{border-bottom:1px solid var(--line);padding:10px 0}
+details:first-of-type{border-top:1px solid var(--line)}
+summary{cursor:pointer;font-weight:600;list-style-position:outside;margin-left:18px}
+details p{margin:8px 0 2px 18px;color:var(--muted);max-width:68ch}
+ul.plain{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;max-width:72ch}
+
+/* code */
+.tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tabs .sp{flex:1}
+.codebox{background:var(--code-bg);color:var(--code-fg);border-radius:10px;overflow-x:auto}
+pre{margin:0;padding:16px;font:12.5px/1.6 var(--mono);tab-size:2}
+pre .c{color:var(--code-dim)} pre .k{color:var(--code-key)}
+
+@media (max-width:860px){
+  .track{grid-template-columns:1fr;gap:10px}
+  .stage{grid-template-rows:none;grid-template-columns:24px minmax(0,1fr);justify-items:stretch;align-items:start;gap:12px}
+  .node{margin-top:12px}
+  .checks{flex-direction:row;flex-wrap:wrap;gap:6px 14px}
+  .detail{grid-template-columns:1fr}
+  .fill{transition:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .packet,.fill{transition:none}.packet.live,.chk.running .dot{animation:none}
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Follow one commit through a secure pipeline</h1>
+    <p class="lede">Seven stages, each with the checks that belong there. Pick what goes wrong, press Play, and watch which gate catches it.</p>
+  </header>
+
+  <section aria-label="Animated pipeline">
+    <div class="bar" id="scenarios"><span class="label">Scenario</span></div>
+    <p class="intro" id="intro"></p>
+    <div class="track" id="track">
+      <div class="rail" id="rail"></div><div class="fill" id="fill"></div><div class="packet" id="packet"></div>
+    </div>
+    <div class="bar">
+      <button class="ctl primary" id="play">Play</button>
+      <button class="ctl" id="step">Next check</button>
+      <button class="ctl" id="reset">Restart</button>
+    </div>
+    <div class="console" id="console" aria-live="polite"></div>
+    <div class="outcome" id="outcome"></div>
+  </section>
+
+  <section aria-label="Stage detail">
+    <div class="detail" id="detail"></div>
+  </section>
+
+  <section>
+    <h2>What fails the build</h2>
+    <p class="sub">Adding scanners is the easy part. The decision that matters is what each finding does. This is an example policy; tune the thresholds to your own risk.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Finding</th><th>Action</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Any secret</td><td><span class="pill block">Block</span></td><td>There is no safe severity for a leaked credential. Rotate it.</td></tr>
+        <tr><td>Critical CVE, fix available</td><td><span class="pill block">Block</span></td><td>The remedy is an upgrade, so there is no reason to ship it.</td></tr>
+        <tr><td>CVE with no fix</td><td><span class="pill track">Exception</span></td><td>Blocking achieves nothing. Record an owner and an expiry date.</td></tr>
+        <tr><td>New vulnerability in changed code</td><td><span class="pill block">Block</span></td><td>Gate on new code so the author fixes it while it is fresh.</td></tr>
+        <tr><td>Old findings in untouched code</td><td><span class="pill track">Ticket</span></td><td>Failing every build on legacy debt teaches people to ignore the gate.</td></tr>
+        <tr><td>High-severity IaC misconfiguration</td><td><span class="pill block">Block</span></td><td>A public bucket or open security group is cheapest to fix as a text file.</td></tr>
+        <tr><td>Unsigned image</td><td><span class="pill block">Reject</span></td><td>The cluster refuses it at admission, whoever submitted it.</td></tr>
+        <tr><td>Runtime alert</td><td><span class="pill page">Page on-call</span></td><td>It already happened, so the only response left is fast detection.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Pipeline config</h2>
+    <p class="sub">A GitHub Actions workflow with one job per stage, and the cluster policy that enforces signatures. It has not been run against a real repository: add your secrets, registry and paths, and pin each action to a version you have checked.</p>
+    <div class="tabs">
+      <button class="chip" data-tab="wf" aria-pressed="true">Workflow</button>
+      <button class="chip" data-tab="kv" aria-pressed="false">Admission policy</button>
+      <span class="sp"></span>
+      <button class="ctl" id="copy">Copy</button>
+    </div>
+    <div class="codebox"><pre id="code-wf"># .github/workflows/secure-pipeline.yml
+name: secure-pipeline
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # CODE: static scans on every pull request
+  code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # full history, so old secrets are found too
+      - name: Secrets scan (any finding fails)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: SAST and quality gate
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          args: -Dsonar.qualitygate.wait=true   # fail the job if the gate fails
+      - name: IaC scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra/
+          soft_fail: false
+      - name: Dependency scan (blocks on fixable critical or high)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # BUILD: build the image, scan it, write the SBOM (main only)
+  build:
+    needs: code
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+      - name: Image scan (blocks on critical)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+  # TEST: attack the running app in staging
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # assumes your staging deploy of this image happens before this step
+      - name: DAST baseline
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ vars.STAGING_URL }}
+          fail_action: true
+
+  # RELEASE: sign the exact digest that passed, attach the SBOM
+  release:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write               # keyless signing with the workflow identity
+    steps:
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+      - name: Sign and attest
+        env:
+          REF: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
+
+  # DEPLOY: by digest, behind a manual approval; the cluster verifies again
+  deploy:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    environment: production         # add required reviewers on this environment
+    steps:
+      # cluster credentials setup omitted
+      - name: Roll out by digest
+        run: |
+          kubectl set image deployment/app \
+            app="${IMAGE}@${{ needs.build.outputs.digest }}"
+</pre><pre id="code-kv" hidden># Kyverno: reject any pod whose image was not signed by the workflow above
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+spec:
+  validationFailureAction: Enforce    # use Audit in dev to see violations first
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/your-org/*"
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: https://token.actions.githubusercontent.com
+                    subject: https://github.com/your-org/your-repo/.github/workflows/secure-pipeline.yml@refs/heads/main
+                    rekor:
+                      url: https://rekor.sigstore.dev
+</pre></div>
+  </section>
+
+  <section>
+    <h2>Interview questions</h2>
+    <p class="sub">Short answers you can say aloud. Each stage above has one more.</p>
+    <div>
+      <details><summary>The pipeline is green. What does that prove?</summary><p>Only that the gates you defined passed. If the pipeline has no security gates, green means it compiled and deployed. A good answer names the gates: no secrets, no fixable critical CVEs, quality gate passed, image signed, admitted by policy.</p></details>
+      <details><summary>How do you add security scans without slowing developers down?</summary><p>Run the scans in parallel and cache the vulnerability databases. Gate only on new code and on findings that are severe and fixable. Send everything else to a backlog. Give results in the pull request, where the author already is.</p></details>
+      <details><summary>What is an SBOM for?</summary><p>It is the list of every package inside an image. When a new vulnerability is announced, you search the SBOMs to learn which deployed images contain the affected package, in minutes, without rescanning everything. Log4Shell is the standard example.</p></details>
+      <details><summary>Where is the image signature checked, and by what?</summary><p>By an admission controller in the cluster, such as Kyverno or OPA Gatekeeper, at the moment a pod is created. Checking in the pipeline alone is not enough, because the risk is a deploy that never went through the pipeline.</p></details>
+      <details><summary>Who decides what blocks a release?</summary><p>Security and engineering agree the policy together and store it as code. Thresholds are explicit, exceptions have an owner and an expiry date, and changing a rule is a reviewed pull request.</p></details>
+      <details><summary>Which single check would you never skip?</summary><p>Secrets scanning. It is fast, has few false positives when tuned, and a leaked credential gives an attacker direct access without needing any vulnerability at all.</p></details>
+    </div>
+  </section>
+
+  <section>
+    <h2>What changed from the original diagram</h2>
+    <ul class="plain">
+      <li><b>IaC scanning moved from Test to Code.</b> Checkov reads Terraform as text. It is static analysis, not dynamic testing.</li>
+      <li><b>SBOM generation moved from Release to Build.</b> It is produced from the image when it is built, then signed at release.</li>
+      <li><b>Secrets scanning is its own check, separate from SAST.</b> SonarQube does not replace Gitleaks or TruffleHog. Either of those two works.</li>
+      <li><b>Dependency scanning and image scanning are two steps.</b> One reads your lockfile, the other reads the built image including its base layers.</li>
+      <li><b>k6 is removed.</b> It is a load-testing tool and does not test security.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const STAGES=[
+ {name:"Plan",job:"Decide what could go wrong",
+  what:"Before code exists, the team names what an attacker would want and writes the answers down as requirements. This is a review by people, not an automated gate.",
+  say:"We agree what could go wrong before we write anything, so the later gates have something to enforce.",
+  checks:[
+   {label:"Threat model",tool:"Design review",when:"A new data flow or trust boundary has had no review",log:"threat-model      reviewed · 2 abuse cases recorded"},
+   {label:"Requirements",tool:"Tickets",when:"A story touching auth or personal data has no security criteria",log:"requirements      auth, logging, retention agreed"}],
+  q:"What is threat modelling, and when do you do it?",
+  a:"A structured look at a design to find what could be attacked: what are we building, what can go wrong, what will we do about it. Do it at design time and again whenever a trust boundary or data flow changes. STRIDE is the usual checklist."},
+ {name:"Code",job:"Catch it before it merges",
+  what:"Every pull request is scanned as text. Nothing has been built yet, so these checks are fast and cheap, and they run on each push.",
+  say:"Three static scans run on every pull request: secrets, our own code, and our infrastructure code.",
+  note:"The original diagram filed IaC scanning under DAST. Checkov reads files without running anything, so it belongs here.",
+  checks:[
+   {label:"Secrets scan",tool:"Gitleaks",when:"Any credential is found, in the diff or in history",log:"gitleaks detect   0 leaks · exit 0"},
+   {label:"SAST",tool:"SonarQube",when:"New code adds a vulnerability or fails the quality gate",log:"sonar-scanner     quality gate PASSED · 0 new vulnerabilities"},
+   {label:"IaC scan",tool:"Checkov",when:"Terraform or manifests have a high-severity misconfiguration",log:"checkov -d infra/ 142 passed · 0 failed · exit 0"}],
+  q:"A developer committed an AWS key and the scan caught it. What now?",
+  a:"Treat the key as compromised. Revoke and rotate it first, then check the provider's logs for use. Removing the commit comes second, because the key may already be cloned or cached. Then add a pre-commit hook so the next one is caught on the laptop."},
+ {name:"Build",job:"Scan what you ship",
+  what:"Most of what you ship is other people's code: libraries and a base image. Build is where both are checked against known vulnerabilities and where the inventory is written down.",
+  say:"Most of our image is code we did not write, so we scan the libraries, scan the image, and keep a list of everything inside.",
+  note:"The original put SBOM generation under Release. It is produced here, from the image just built, and signed later.",
+  checks:[
+   {label:"Dependencies",tool:"Trivy fs",when:"A critical or high CVE has a fix available",log:"trivy fs .        0 CRITICAL · 0 HIGH · exit 0"},
+   {label:"Image scan",tool:"Trivy image",when:"The built image has a critical CVE in its OS packages or base",log:"trivy image       app:a3f9c1e · 0 CRITICAL · exit 0"},
+   {label:"SBOM",tool:"Syft",when:"Never blocks. It records every package in the image",log:"syft              sbom.spdx.json · 214 packages"}],
+  q:"Trivy reports a critical CVE with no fix available. Do you block the release?",
+  a:"Not automatically. Check whether the vulnerable code is reachable and whether a different base image avoids it. If you accept the risk, record an exception with an owner and an expiry date, so it comes back for review."},
+ {name:"Test",job:"Attack the running app",
+  what:"The app runs in a test environment and is probed from outside, the way an attacker sees it. This finds what static scans cannot: missing headers, broken access control, exposed endpoints.",
+  say:"Static scans read the code. Here we run it and attack it from the outside.",
+  note:"k6 sat here in the original. It is a load-testing tool and says nothing about security.",
+  checks:[
+   {label:"DAST",tool:"OWASP ZAP",when:"The scan raises a FAIL-level alert against the running app",log:"zap-baseline      0 FAIL · 2 WARN · exit 0"},
+   {label:"API tests",tool:"Test suite",when:"One user can read or change another user's data",log:"api-tests         38 passed · authorization checks ok"}],
+  q:"SAST, SCA and DAST: what is the difference?",
+  a:"SAST reads your own source for flaws. SCA checks third-party dependencies against known CVEs. DAST probes the running application over HTTP. They find different things, so one does not replace another."},
+ {name:"Release",job:"Prove where it came from",
+  what:"The image that passed every check is signed with the pipeline's own identity, and the SBOM is attached to it. From here on the image is referred to by digest, so it cannot be swapped.",
+  say:"We sign the exact image that passed, so the cluster can tell it apart from anything else.",
+  checks:[
+   {label:"Sign image",tool:"Cosign",when:"Signing fails, or any earlier job did not pass",log:"cosign sign       signed app@sha256:9b1d…e04"},
+   {label:"Attest SBOM",tool:"Cosign attest",when:"The SBOM is missing",log:"cosign attest     SBOM attached to image"}],
+  q:"Why sign container images?",
+  a:"A tag can be moved to point at a different image. A signature ties one digest to the pipeline that built it. The cluster can then refuse anything the pipeline did not produce, which closes the path around your scans."},
+ {name:"Deploy",job:"The cluster checks for itself",
+  what:"The cluster does not trust the pipeline. An admission controller inspects every pod before it starts and rejects anything unsigned or over-privileged, whoever submitted it. The deploy identity has only the RBAC rights it needs.",
+  say:"Even if someone goes around the pipeline, the cluster refuses anything unsigned or over-privileged.",
+  checks:[
+   {label:"Verify signature",tool:"Kyverno / OPA",when:"The image has no valid signature from the pipeline",log:"kyverno           signature valid · pod admitted"},
+   {label:"Pod policy",tool:"Pod Security",when:"A pod asks to run privileged, as root, or with host access",log:"pod-security      runAsNonRoot ok · not privileged"}],
+  q:"How do you keep security policy consistent across dev, staging and production?",
+  a:"Write policy as code, keep it in Git, and apply the same policies to every cluster. Run them in audit mode in dev so people see violations early, and enforce them in production. Exceptions are reviewed changes, not manual edits."},
+ {name:"Operate",job:"Keep watching after release",
+  what:"Passing every gate describes the image on the day it was built. New CVEs are published daily and attackers act at runtime, so production is watched continuously. Nothing here can block a deploy. It detects and alerts.",
+  say:"Yesterday's clean scan says nothing about a CVE published today, so we keep scanning and watch behaviour in production.",
+  checks:[
+   {label:"Runtime detection",tool:"Falco",when:"A shell opens in a container, or a process makes an unexpected connection",log:"falco             watching syscalls · 0 alerts"},
+   {label:"Monitoring",tool:"Prometheus",when:"Error rate or latency leaves the agreed range",log:"prometheus        error rate 0.2% · within SLO"},
+   {label:"Rescan images",tool:"Trivy",when:"A new critical CVE matches an image already deployed",log:"trivy rescan      0 new CRITICAL since deploy"}],
+  q:"What does shift right mean, and why do you need it if you shift left?",
+  a:"Shift left moves checks earlier, where fixes are cheap. Shift right is detection in production: runtime monitoring, rescanning deployed images, incident response. You need both because some problems only exist at runtime, and new vulnerabilities appear after release."}
+];
+const SCEN=[
+ {id:"clean",label:"Clean commit",intro:"A normal change. Every gate runs and passes.",
+  end:["pass","Deployed.","Green here means every gate passed, and you can name each one."]},
+ {id:"secret",label:"Leaked secret",intro:"A developer commits an AWS access key in a settings file.",
+  hit:{s:1,c:0,st:"fail",log:"gitleaks detect   1 leak · aws-access-token · config/settings.py:14 · exit 1"},
+  end:["fail","Stopped at Code. Nothing was built.","Rotate the key before anything else. It is in Git history, so treat it as leaked."]},
+ {id:"dep",label:"Vulnerable library",intro:"The change pulls in log4j-core 2.14.1, which has a critical known vulnerability.",
+  hit:{s:2,c:0,st:"fail",log:"trivy fs .        CVE-2021-44228 log4j-core 2.14.1 CRITICAL · fixed in 2.15.0 · exit 1"},
+  end:["fail","Stopped at Build. No image was published.","A fixed version exists, so the remedy is an upgrade and the gate blocks until it is done."]},
+ {id:"iac",label:"Public bucket",intro:"A Terraform change makes an S3 bucket publicly readable.",
+  hit:{s:1,c:2,st:"fail",log:"checkov -d infra/ FAILED CKV_AWS_20 · aws_s3_bucket.reports allows public read · exit 1"},
+  end:["fail","Stopped at Code. The bucket was never created.","The mistake was caught as a text file, before any cloud resource existed."]},
+ {id:"bypass",label:"Hand-pushed image",intro:"Someone builds an image on a laptop and pushes it straight to the registry, skipping the pipeline.",
+  skipTo:5,hit:{s:5,c:0,st:"fail",log:"kyverno           no signature found for app:hotfix · pod REJECTED"},
+  end:["fail","Rejected at Deploy. The pod never started.","This is why admission control exists. Scans only protect you if nothing can go around them."]},
+ {id:"runtime",label:"Shell in production",intro:"Everything passes. Two days later an attacker gets a shell inside a running container.",
+  hit:{s:6,c:0,st:"alert",log:"falco             Warning: terminal shell in container · user=root pod=app-7d9f · paged on-call"},
+  end:["alert","Detected in production. On-call was paged.","No gate could block this, because it happened after release. Detection is the only control left."]}
+];
+
+const $=id=>document.getElementById(id);
+const track=$("track"),rail=$("rail"),fill=$("fill"),packet=$("packet"),con=$("console"),outcome=$("outcome");
+const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const T_RUN=reduce?250:750,T_MOVE=reduce?50:520;
+const FLAT=[];STAGES.forEach((s,i)=>s.checks.forEach((_,j)=>FLAT.push([i,j])));
+const GLYPH={pass:"✓",fail:"✕",alert:"!",skipped:"–"};
+let scen=SCEN[0],st,pos,active,sel,playing=false,busy=false,ended=false,runId=0,lines=[];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+// build static DOM
+SCEN.forEach(s=>{const b=document.createElement("button");b.className="chip";b.textContent=s.label;b.dataset.id=s.id;
+  b.onclick=()=>{scen=s;reset();if(!reduce)play()};$("scenarios").appendChild(b)});
+STAGES.forEach((s,i)=>{const d=document.createElement("div");d.className="stage";
+  d.innerHTML=`<span class="node"></span><button class="card" aria-label="${s.name} stage details"><span><span class="name">${s.name}</span><span class="job">${s.job}</span></span><span class="checks">${s.checks.map(c=>`<span class="chk"><span class="dot"></span><span class="t">${c.label}</span></span>`).join("")}</span></button>`;
+  d.querySelector(".card").onclick=()=>{sel=i;render()};track.appendChild(d)});
+const stageEls=[...track.querySelectorAll(".stage")];
+
+function stageState(i){const a=st[i];
+  if(a.includes("fail"))return"fail";if(a.includes("alert"))return"alert";
+  if(a.every(x=>x==="skipped"))return"skipped";if(a.every(x=>x==="pass"))return"pass";return"";}
+function log(text,cls){lines.push([text,cls||""]);if(lines.length>7)lines.shift();
+  con.innerHTML=lines.map(([t,c])=>`<div class="${c}">${esc(t)}</div>`).join("")}
+function render(){
+  document.querySelectorAll("#scenarios .chip").forEach(b=>b.setAttribute("aria-pressed",b.dataset.id===scen.id));
+  $("intro").textContent=scen.intro;
+  stageEls.forEach((el,i)=>{const ss=stageState(i);el.className="stage "+ss+(i===sel?" sel":"");
+    el.querySelector(".node").textContent=GLYPH[ss]||i+1;
+    el.querySelectorAll(".chk").forEach((c,j)=>{c.className="chk "+st[i][j];c.querySelector(".dot").textContent=GLYPH[st[i][j]]||""})});
+  const as=stageState(active);
+  packet.className="packet "+(ended?(as||"pass"):(playing||busy?"live":""))+(as==="fail"||as==="alert"?" "+as:"");
+  $("play").textContent=ended?"Replay":playing?"Pause":"Play";$("step").disabled=ended;
+  renderDetail();place();
+}
+function renderDetail(){const s=STAGES[sel],last=sel===6;
+  $("detail").innerHTML=`<div>
+    <div><span class="label">Stage ${sel+1} of 7</span><h2>${s.name}: ${s.job.toLowerCase()}</h2></div>
+    <p>${s.what}</p>
+    <div class="scroll"><table><thead><tr><th>Check</th><th>Tool</th><th>${last?"Alerts when":"Blocks when"}</th></tr></thead><tbody>
+    ${s.checks.map(c=>`<tr><td>${c.label}</td><td class="tool">${c.tool}</td><td>${c.when}</td></tr>`).join("")}</tbody></table></div>
+    ${s.note?`<p class="note"><b>Corrected:</b> ${s.note}</p>`:""}
+  </div><div>
+    <span class="label">Say it in one line</span>
+    <p class="say">${s.say}</p>
+    <span class="label">Interview question</span>
+    <details id="q-${sel}"><summary>${s.q}</summary><p>${s.a}</p></details>
+  </div>`;
+}
+function place(){const tr=track.getBoundingClientRect();
+  const c=i=>{const r=stageEls[i].querySelector(".node").getBoundingClientRect();return{x:r.left-tr.left+r.width/2,y:r.top-tr.top+r.height/2}};
+  const a=c(0),b=c(6),p=c(active),vert=Math.abs(a.x-b.x)<2;
+  const set=(el,to)=>{el.style.left=(vert?a.x-1:a.x)+"px";el.style.top=(vert?a.y:a.y-1)+"px";
+    el.style.width=(vert?2:Math.max(0,to.x-a.x))+"px";el.style.height=(vert?Math.max(0,to.y-a.y):2)+"px"};
+  set(rail,b);set(fill,p);packet.style.transform=`translate(${p.x}px,${p.y}px)`;
+}
+function setOutcome(cls,title,text){outcome.className="outcome "+cls;outcome.innerHTML=`<strong>${title}</strong><span>${text}</span>`}
+function reset(){runId++;playing=false;busy=false;ended=false;pos=-1;active=0;sel=0;lines=[];
+  st=STAGES.map(s=>s.checks.map(()=>"idle"));
+  if(scen.skipTo){for(let i=0;i<scen.skipTo;i++)st[i]=st[i].map(()=>"skipped");
+    pos=FLAT.findIndex(([s])=>s===scen.skipTo)-1;
+    log("$ docker push ghcr.io/acme/app:hotfix","dim");log("pipeline did not run · no scans · no signature","amb");
+  }else log("$ git push origin main   (commit a3f9c1e)","dim");
+  setOutcome("","Ready.","Press Play, or use Next check to walk through one gate at a time.");
+  render();
+}
+async function advance(){
+  if(ended||busy)return false;busy=true;const id=runId;
+  pos++;const[s,c]=FLAT[pos];
+  if(s!==active||pos===0||(scen.skipTo&&st[s].every(x=>x==="idle"))){active=s;sel=s;render();
+    log("── "+STAGES[s].name.toLowerCase()+" ──","dim");await sleep(T_MOVE);if(id!==runId)return false}
+  st[s][c]="running";render();await sleep(T_RUN);if(id!==runId)return false;
+  const h=scen.hit&&scen.hit.s===s&&scen.hit.c===c?scen.hit:null;
+  st[s][c]=h?h.st:"pass";
+  log(h?h.log:STAGES[s].checks[c].log,h?(h.st==="fail"?"bad":"amb"):"ok");
+  if((h&&h.st==="fail")||pos===FLAT.length-1){ended=true;playing=false;setOutcome(...scen.end)}
+  busy=false;render();return!ended;
+}
+async function play(){if(ended)reset();if(playing)return;playing=true;const id=runId;render();
+  while(playing&&id===runId&&await advance()){}
+}
+$("play").onclick=()=>{if(playing){playing=false;render()}else play()};
+$("step").onclick=()=>{if(playing){playing=false;render()}else advance()};
+$("reset").onclick=()=>reset();
+addEventListener("resize",place);
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(place);
+
+// config tabs, highlighting, copy
+const RAW={};let tab="wf";
+["wf","kv"].forEach(k=>{const el=$("code-"+k);RAW[k]=el.textContent;
+  el.innerHTML=RAW[k].split("\n").map(l=>{
+    if(/^\s*#/.test(l))return`<span class="c">${esc(l)}</span>`;
+    let cm="";const ci=l.indexOf("  # ");if(ci>-1){cm=`<span class="c">${esc(l.slice(ci))}</span>`;l=l.slice(0,ci)}
+    const m=l.match(/^(\s*(?:- )?)([A-Za-z_][\w.-]*)(:)(.*)$/);
+    return(m?esc(m[1])+`<span class="k">${esc(m[2])}</span>`+m[3]+esc(m[4]):esc(l))+cm}).join("\n")});
+document.querySelectorAll("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;
+  document.querySelectorAll("[data-tab]").forEach(x=>x.setAttribute("aria-pressed",x===b));
+  $("code-wf").hidden=tab!=="wf";$("code-kv").hidden=tab!=="kv"});
+$("copy").onclick=async()=>{const b=$("copy");
+  try{await navigator.clipboard.writeText(RAW[tab]);b.textContent="Copied"}
+  catch(e){const r=document.createRange();r.selectNodeContents($("code-"+tab));const s=getSelection();s.removeAllRanges();s.addRange(r);b.textContent="Selected, press copy"}
+  setTimeout(()=>b.textContent="Copy",1800)};
+
+reset();
+if(!reduce)setTimeout(()=>{if(pos===-1&&!playing)play()},900);
+</script>
